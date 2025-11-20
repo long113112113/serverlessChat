@@ -102,6 +102,14 @@ impl P2PClient {
                     }
                 }
             }
+            NetworkCommand::SyncRequest {
+                to_peer,
+                last_timestamp,
+            } => {
+                log::warn!(
+                    "SyncRequest not implemented (to_peer={to_peer}, last_timestamp={last_timestamp})"
+                );
+            }
         }
     }
 

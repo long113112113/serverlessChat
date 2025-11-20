@@ -20,6 +20,11 @@ impl AppState {
         self.messages.push(message);
     }
 
+    pub fn push_history(&mut self, mut history: Vec<ChatMessage>) {
+        self.messages.append(&mut history);
+        self.messages.sort_by_key(|message| message.timestamp);
+    }
+
     pub fn add_peer(&mut self, peer_id: String) {
         if !self.peers.iter().any(|peer| peer == &peer_id) {
             self.peers.push(peer_id);

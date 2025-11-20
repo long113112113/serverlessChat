@@ -29,6 +29,7 @@ impl ChatApp {
         while let Ok(event) = self.event_receiver.try_recv() {
             match event {
                 NetworkEvent::MessageReceived(message) => self.state.push_message(message),
+                NetworkEvent::HistorySynced(history) => self.state.push_history(history),
                 NetworkEvent::PeerConnected(peer_id) => self.state.add_peer(peer_id),
                 NetworkEvent::PeerDisconnected(peer_id) => self.state.remove_peer(&peer_id),
             }
