@@ -1,6 +1,7 @@
 mod common;
 mod config;
 mod network;
+mod storage;
 mod ui;
 
 use clap::{Parser, Subcommand};
@@ -18,9 +19,6 @@ use ui::ChatApp;
     about = "Modular P2P chat application"
 )]
 struct Cli {
-    /// Path to JSON config file
-    #[arg(long, default_value = config::DEFAULT_CONFIG_PATH, value_name = "FILE")]
-    config: String,
     #[command(subcommand)]
     mode: Option<Mode>,
 }
@@ -38,22 +36,27 @@ async fn main() -> Result<(), eframe::Error> {
     env_logger::init();
 
     let cli = Cli::parse();
-    let app_config = config::load_config(&cli.config);
-    let bootstrap_peers = parse_bootstrap_peers(&app_config.bootstrap_nodes);
+
+    // Ensure data directory exists
+    storage::ensure_data_dir().ok();
+
+    // Load bootstrap nodes from SQLite
+    let bootstrap_nodes = config::load_bootstrap_nodes_from_db();
+    let bootstrap_peers = parse_bootstrap_peers(&bootstrap_nodes);
 
     if cli.mode == Some(Mode::Server) {
-        run_server_node(bootstrap_peers, cli.config.clone()).await;
+        run_server_node(bootstrap_peers).await;
         return Ok(());
     }
 
     run_full_client(bootstrap_peers).await
 }
 
-async fn run_server_node(bootstrap_peers: Vec<(PeerId, Multiaddr)>, config_path: String) {
+async fn run_server_node(bootstrap_peers: Vec<(PeerId, Multiaddr)>) {
     let (_cmd_tx, cmd_rx) = mpsc::channel(1);
     let (event_tx, _event_rx) = mpsc::channel(1);
 
-    let client = P2PClient::new(event_tx, cmd_rx, bootstrap_peers, false, Some(config_path));
+    let client = P2PClient::new(event_tx, cmd_rx, bootstrap_peers, false);
     if let Err(err) = client.run().await {
         log::error!("Bootstrap node terminated unexpectedly: {err}");
     }
@@ -69,7 +72,7 @@ async fn run_full_client(bootstrap_peers: Vec<(PeerId, Multiaddr)>) -> Result<()
     // 2. Khởi chạy Network Thread (Chạy ngầm)
     let bootstrap_clone = bootstrap_peers.clone();
     tokio::spawn(async move {
-        let client = P2PClient::new(event_tx, cmd_rx, bootstrap_clone, true, None);
+        let client = P2PClient::new(event_tx, cmd_rx, bootstrap_clone, true);
         if let Err(err) = client.run().await {
             log::error!("Network client terminated: {err}");
         }

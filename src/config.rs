@@ -1,58 +1,6 @@
-use std::fs;
-use std::path::Path;
-
 use regex;
-use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_CONFIG_PATH: &str = "config/bootstrap.json";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    #[serde(default)]
-    pub bootstrap_nodes: Vec<String>,
-    /// Optional public IP or domain to use instead of auto-detected private IP
-    #[serde(default)]
-    pub public_address: Option<String>,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            bootstrap_nodes: Vec::new(),
-            public_address: None,
-        }
-    }
-}
-
-pub fn load_config(path: &str) -> AppConfig {
-    let path = Path::new(path);
-    match fs::read_to_string(path) {
-        Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
-            Ok(config) => config,
-            Err(err) => {
-                log::warn!("Failed to parse config file {}: {err}", path.display());
-                AppConfig::default()
-            }
-        },
-        Err(err) => {
-            log::info!(
-                "Config file {} not found ({err}); using defaults",
-                path.display()
-            );
-            AppConfig::default()
-        }
-    }
-}
-
-pub fn save_config(path: &str, config: &AppConfig) -> std::io::Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let json = serde_json::to_string_pretty(config)?;
-    fs::write(path, json)
-}
+use crate::storage::{ServerDatabase, ensure_data_dir};
 
 /// Replace private IP with public IP in multiaddr if available
 pub fn replace_with_public_ip(multiaddr_str: &str, public_ip: Option<&str>) -> String {
@@ -77,16 +25,11 @@ pub fn replace_with_public_ip(multiaddr_str: &str, public_ip: Option<&str>) -> S
     }
 }
 
-pub async fn persist_bootstrap_node_async(path: &str, entry: &str) {
-    let mut config = load_config(path);
+pub async fn persist_bootstrap_node_async(_path: &str, entry: &str) {
+    ensure_data_dir().ok();
 
-    // Try to get public IP from config or fetch it
-    let public_ip = if config.public_address.is_some() {
-        config.public_address.clone()
-    } else {
-        // Fetch public IP asynchronously (we're already in async context)
-        fetch_public_ip().await.ok()
-    };
+    // Fetch public IP asynchronously
+    let public_ip = fetch_public_ip().await.ok();
 
     let entry_with_public = if let Some(public_ip) = &public_ip {
         let replaced = replace_with_public_ip(entry, Some(public_ip));
@@ -100,52 +43,108 @@ pub async fn persist_bootstrap_node_async(path: &str, entry: &str) {
         entry.to_string()
     };
 
-    // Remove all entries with same peer ID
-    if let Ok(addr) = entry_with_public.parse::<libp2p::Multiaddr>() {
-        if let Some(peer_id) = extract_peer_id(&addr) {
-            config.bootstrap_nodes.retain(|node| {
-                node.parse::<libp2p::Multiaddr>()
-                    .ok()
-                    .and_then(|a| extract_peer_id(&a))
-                    .map(|pid| pid != peer_id)
-                    .unwrap_or(true)
-            });
+    // Use SQLite for server mode
+    // First validate that the address is a valid multiaddr
+    let addr = match entry_with_public.parse::<libp2p::Multiaddr>() {
+        Ok(addr) => addr,
+        Err(err) => {
+            log::warn!(
+                "Invalid multiaddr '{}', not persisting to database: {}",
+                entry_with_public,
+                err
+            );
+            return;
         }
-    }
+    };
 
-    config.bootstrap_nodes.insert(0, entry_with_public.clone());
+    // Extract peer_id and validate it exists
+    let peer_id = match extract_peer_id(&addr) {
+        Some(peer_id) => peer_id,
+        None => {
+            log::warn!(
+                "Multiaddr '{}' missing /p2p/PeerId suffix, not persisting to database",
+                entry_with_public
+            );
+            return;
+        }
+    };
 
-    if let Err(err) = save_config(path, &config) {
-        log::error!("Failed to write bootstrap config {}: {err}", path);
+    if let Ok(db) = ServerDatabase::new() {
+        // Remove duplicates with same peer_id
+        if let Err(err) = db.remove_duplicate_peer_id(&peer_id.to_string(), &entry_with_public) {
+            log::warn!("Failed to remove duplicate peer_id: {}", err);
+        }
+
+        if let Err(err) = db.upsert_bootstrap_node(&entry_with_public, Some(&peer_id.to_string())) {
+            log::error!("Failed to persist bootstrap node to SQLite: {}", err);
+        } else {
+            log::info!("Persisted bootstrap node {} to SQLite", entry_with_public);
+        }
     } else {
-        log::info!("Persisted bootstrap node {} to {}", entry_with_public, path);
+        log::error!("Failed to open server database");
     }
 }
 
 /// Add a peer's address to bootstrap list (for server mode to track connected peers)
-pub async fn add_peer_to_bootstrap_async(path: &str, peer_addr: &str) {
-    let mut config = load_config(path);
+pub async fn add_peer_to_bootstrap_async(_path: &str, peer_addr: &str) {
+    ensure_data_dir().ok();
 
-    // Check if peer already exists
-    if let Ok(addr) = peer_addr.parse::<libp2p::Multiaddr>() {
-        if let Some(peer_id) = extract_peer_id(&addr) {
-            // Remove existing entries with same peer ID
-            config.bootstrap_nodes.retain(|node| {
-                node.parse::<libp2p::Multiaddr>()
-                    .ok()
-                    .and_then(|a| extract_peer_id(&a))
-                    .map(|pid| pid != peer_id)
-                    .unwrap_or(true)
-            });
+    // First validate that the address is a valid multiaddr
+    let addr = match peer_addr.parse::<libp2p::Multiaddr>() {
+        Ok(addr) => addr,
+        Err(err) => {
+            log::warn!(
+                "Invalid multiaddr '{}', not persisting to database: {}",
+                peer_addr,
+                err
+            );
+            return;
+        }
+    };
 
-            // Add to end of list (not at position 0, which is reserved for self)
-            config.bootstrap_nodes.push(peer_addr.to_string());
+    // Extract peer_id and validate it exists
+    let peer_id = match extract_peer_id(&addr) {
+        Some(peer_id) => peer_id,
+        None => {
+            log::warn!(
+                "Multiaddr '{}' missing /p2p/PeerId suffix, not persisting to database",
+                peer_addr
+            );
+            return;
+        }
+    };
 
-            if let Err(err) = save_config(path, &config) {
-                log::error!("Failed to write bootstrap config {}: {err}", path);
-            } else {
-                log::debug!("Added peer {} to bootstrap list", peer_addr);
+    if let Ok(db) = ServerDatabase::new() {
+        // Remove existing entries with same peer ID
+        if let Err(err) = db.remove_duplicate_peer_id(&peer_id.to_string(), peer_addr) {
+            log::warn!("Failed to remove duplicate peer_id: {}", err);
+        }
+
+        if let Err(err) = db.upsert_bootstrap_node(peer_addr, Some(&peer_id.to_string())) {
+            log::error!("Failed to add peer to bootstrap SQLite: {}", err);
+        } else {
+            log::debug!("Added peer {} to bootstrap SQLite", peer_addr);
+        }
+    } else {
+        log::error!("Failed to open server database");
+    }
+}
+
+/// Load bootstrap nodes from SQLite
+pub fn load_bootstrap_nodes_from_db() -> Vec<String> {
+    ensure_data_dir().ok();
+
+    match ServerDatabase::new() {
+        Ok(db) => match db.get_all_bootstrap_nodes() {
+            Ok(nodes) => nodes.into_iter().map(|n| n.address).collect(),
+            Err(err) => {
+                log::warn!("Failed to load bootstrap nodes from SQLite: {}", err);
+                Vec::new()
             }
+        },
+        Err(err) => {
+            log::warn!("Failed to open server database: {}", err);
+            Vec::new()
         }
     }
 }

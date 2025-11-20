@@ -22,7 +22,6 @@ pub struct P2PClient {
     command_receiver: mpsc::Receiver<NetworkCommand>,
     bootstrap_peers: Vec<(PeerId, Multiaddr)>,
     enable_chat: bool,
-    config_path: Option<String>,
     local_peer_id: Option<PeerId>,
 }
 
@@ -32,14 +31,12 @@ impl P2PClient {
         command_receiver: mpsc::Receiver<NetworkCommand>,
         bootstrap_peers: Vec<(PeerId, Multiaddr)>,
         enable_chat: bool,
-        config_path: Option<String>,
     ) -> Self {
         Self {
             event_sender,
             command_receiver,
             bootstrap_peers,
             enable_chat,
-            config_path,
             local_peer_id: None,
         }
     }
@@ -208,14 +205,11 @@ impl P2PClient {
                 info.protocols
             );
 
-            // In server mode, persist peer addresses to bootstrap file
+            // In server mode, persist peer addresses to SQLite
             if !self.enable_chat {
-                if let Some(config_path) = &self.config_path {
-                    for addr in &info.listen_addrs {
-                        let full_addr = addr.clone().with(Protocol::P2p(peer_id));
-                        config::add_peer_to_bootstrap_async(config_path, &full_addr.to_string())
-                            .await;
-                    }
+                for addr in &info.listen_addrs {
+                    let full_addr = addr.clone().with(Protocol::P2p(peer_id));
+                    config::add_peer_to_bootstrap_async("", &full_addr.to_string()).await;
                 }
             }
 
@@ -256,13 +250,11 @@ impl P2PClient {
             return;
         }
 
-        let (Some(config_path), Some(peer_id)) =
-            (self.config_path.as_ref(), self.local_peer_id.clone())
-        else {
+        let Some(peer_id) = self.local_peer_id.clone() else {
             return;
         };
 
         let full_addr = address.clone().with(Protocol::P2p(peer_id));
-        config::persist_bootstrap_node_async(config_path, &full_addr.to_string()).await;
+        config::persist_bootstrap_node_async("", &full_addr.to_string()).await;
     }
 }
