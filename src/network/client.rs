@@ -179,7 +179,7 @@ impl P2PClient {
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 log::info!("Listening on {address:?}");
-                self.persist_self_address(&address);
+                self.persist_self_address(&address).await;
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 let _ = self
@@ -240,7 +240,7 @@ impl P2PClient {
         }
     }
 
-    fn persist_self_address(&self, address: &Multiaddr) {
+    async fn persist_self_address(&self, address: &Multiaddr) {
         if self.enable_chat {
             return;
         }
@@ -252,6 +252,6 @@ impl P2PClient {
         };
 
         let full_addr = address.clone().with(Protocol::P2p(peer_id));
-        config::persist_bootstrap_node(config_path, &full_addr.to_string());
+        config::persist_bootstrap_node_async(config_path, &full_addr.to_string()).await;
     }
 }
