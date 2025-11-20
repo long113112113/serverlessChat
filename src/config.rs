@@ -84,11 +84,8 @@ pub async fn persist_bootstrap_node_async(path: &str, entry: &str) {
     let public_ip = if config.public_address.is_some() {
         config.public_address.clone()
     } else {
-        // Try to fetch public IP from current runtime
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(async { fetch_public_ip().await.ok() }),
-            Err(_) => None,
-        }
+        // Fetch public IP asynchronously (we're already in async context)
+        fetch_public_ip().await.ok()
     };
 
     let entry_with_public = if let Some(public_ip) = &public_ip {
@@ -122,6 +119,34 @@ pub async fn persist_bootstrap_node_async(path: &str, entry: &str) {
         log::error!("Failed to write bootstrap config {}: {err}", path);
     } else {
         log::info!("Persisted bootstrap node {} to {}", entry_with_public, path);
+    }
+}
+
+/// Add a peer's address to bootstrap list (for server mode to track connected peers)
+pub async fn add_peer_to_bootstrap_async(path: &str, peer_addr: &str) {
+    let mut config = load_config(path);
+
+    // Check if peer already exists
+    if let Ok(addr) = peer_addr.parse::<libp2p::Multiaddr>() {
+        if let Some(peer_id) = extract_peer_id(&addr) {
+            // Remove existing entries with same peer ID
+            config.bootstrap_nodes.retain(|node| {
+                node.parse::<libp2p::Multiaddr>()
+                    .ok()
+                    .and_then(|a| extract_peer_id(&a))
+                    .map(|pid| pid != peer_id)
+                    .unwrap_or(true)
+            });
+
+            // Add to end of list (not at position 0, which is reserved for self)
+            config.bootstrap_nodes.push(peer_addr.to_string());
+
+            if let Err(err) = save_config(path, &config) {
+                log::error!("Failed to write bootstrap config {}: {err}", path);
+            } else {
+                log::debug!("Added peer {} to bootstrap list", peer_addr);
+            }
+        }
     }
 }
 

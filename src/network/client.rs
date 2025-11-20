@@ -172,7 +172,7 @@ impl P2PClient {
                 }
             }
             SwarmEvent::Behaviour(ChatBehaviorEvent::Identify(event)) => {
-                self.handle_identify_event(event, swarm);
+                self.handle_identify_event(event, swarm).await;
             }
             SwarmEvent::Behaviour(ChatBehaviorEvent::Kad(event)) => {
                 self.handle_kad_event(event);
@@ -197,7 +197,7 @@ impl P2PClient {
         }
     }
 
-    fn handle_identify_event(
+    async fn handle_identify_event(
         &mut self,
         event: identify::Event,
         swarm: &mut Swarm<super::behavior::ChatBehavior>,
@@ -207,6 +207,17 @@ impl P2PClient {
                 "Identify info from {peer_id}: protocols={:?}",
                 info.protocols
             );
+
+            // In server mode, persist peer addresses to bootstrap file
+            if !self.enable_chat {
+                if let Some(config_path) = &self.config_path {
+                    for addr in &info.listen_addrs {
+                        let full_addr = addr.clone().with(Protocol::P2p(peer_id));
+                        config::add_peer_to_bootstrap_async(config_path, &full_addr.to_string())
+                            .await;
+                    }
+                }
+            }
 
             for addr in info.listen_addrs {
                 swarm
