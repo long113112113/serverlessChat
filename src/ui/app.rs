@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::common::{NetworkCommand, NetworkEvent};
 
-use super::components::{chat_area, input_bar, sidebar};
+use super::components::{chat_area, debug_panel, input_bar, sidebar};
 use super::state::AppState;
 
 pub struct ChatApp {
@@ -50,9 +50,19 @@ impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_network_events();
 
-        egui::SidePanel::left("peer_sidebar").show(ctx, |ui| {
-            sidebar::render(ui, &self.state.peers);
-        });
+        egui::SidePanel::left("peer_sidebar")
+            .resizable(true)
+            .default_width(200.0)
+            .show(ctx, |ui| {
+                sidebar::render(ui, &self.state);
+            });
+
+        egui::SidePanel::right("debug_panel")
+            .resizable(true)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                debug_panel::render(ui, &self.state);
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Rust P2P Chat");
