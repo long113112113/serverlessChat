@@ -1,3 +1,5 @@
 .cursorignore
 .cursor/rules/rule.mdc
 /target
+bootstrap.example.json
+config/bootstrap.json

@@ -36,7 +36,11 @@ impl AppState {
         self.add_debug_event(
             "MESSAGE_RECEIVED".to_string(),
             Some(message.sender.clone()),
-            format!("Message from {}: {}", &message.sender[..8], &message.content),
+            format!(
+                "Message from {}: {}",
+                &message.sender[..8],
+                &message.content
+            ),
         );
     }
 

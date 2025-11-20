@@ -16,13 +16,15 @@ futures = "0.3.31"
 # --- Mạng P2P (libp2p) ---
 # Chúng ta dùng các feature cơ bản:
 # - gossipsub: Giao thức lan truyền tin nhắn (Chat room)
-# - mdns: Tự tìm nhau trong mạng LAN (không cần server mồi)
+# - kad: Kademlia DHT để tìm peer qua Internet
+# - identify: Trao đổi thông tin kết nối (addr, agent)
 # - noise: Mã hóa kết nối
 # - yamux: Đa luồng trên 1 kết nối
 # - tcp-tokio: Chạy trên nền tokio
 libp2p = { version = "0.56.0", features = [
     "gossipsub", 
-    "mdns", 
+    "kad",
+    "identify",
     "noise", 
     "yamux", 
     "tcp", 
@@ -38,3 +40,5 @@ chrono = "0.4.42" # Xử lý thời gian
 hex = "0.4.3"
 log = "0.4.28"
 env_logger = "0.11.8"
+dotenvy = "0.15"
+clap = { version = "4.5.4", features = ["derive"] }
