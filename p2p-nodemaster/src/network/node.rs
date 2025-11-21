@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -45,6 +46,16 @@ impl BootstrapNode {
             local_peer_id.clone(),
             SwarmConfig::with_tokio_executor(),
         );
+
+        // Optionally announce externally reachable address (e.g. public IP) via env
+        if let Some(public_addr) = load_public_address_from_env()? {
+            log::info!("Announcing public address: {}", public_addr);
+            swarm.add_external_address(public_addr.clone());
+            if let Some(peer_id) = self.local_peer_id.clone() {
+                let full_addr = public_addr.with(Protocol::P2p(peer_id));
+                log::info!("Clients can connect via public address: {}", full_addr);
+            }
+        }
 
         // Listen on all interfaces using fixed port 4001
         swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
@@ -191,5 +202,18 @@ fn load_or_generate_key() -> Result<identity::Keypair, Box<dyn Error>> {
             NODE_KEY_PATH
         );
         Ok(keypair)
+    }
+}
+
+fn load_public_address_from_env() -> Result<Option<Multiaddr>, Box<dyn Error>> {
+    match env::var("NODE_PUBLIC_ADDR") {
+        Ok(addr_str) => {
+            let addr: Multiaddr = addr_str
+                .parse()
+                .map_err(|e| format!("Invalid NODE_PUBLIC_ADDR `{addr_str}`: {e}"))?;
+            Ok(Some(addr))
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err("NODE_PUBLIC_ADDR contains non-unicode characters".into()),
     }
 }
