@@ -30,6 +30,10 @@ libp2p = { version = "0.56.0", features = [
     "tcp",
     "dns",
     "macros",
-    "tokio"
+    "tokio",
+    "relay",
+    "dcutr",
+    "autonat",
+    "ping"
 ] }
 

@@ -88,6 +88,18 @@ impl BootstrapNode {
             SwarmEvent::Behaviour(NodeBehaviorEvent::Kad(event)) => {
                 self.handle_kad_event(event);
             }
+            SwarmEvent::Behaviour(NodeBehaviorEvent::Relay(event)) => {
+                log::debug!("Relay event: {:?}", event);
+            }
+            SwarmEvent::Behaviour(NodeBehaviorEvent::Autonat(event)) => {
+                log::debug!("Autonat event: {:?}", event);
+            }
+            SwarmEvent::Behaviour(NodeBehaviorEvent::Dcutr(event)) => {
+                log::debug!("DCUtR event: {:?}", event);
+            }
+            SwarmEvent::Behaviour(NodeBehaviorEvent::Ping(event)) => {
+                log::trace!("Ping event: {:?}", event);
+            }
             SwarmEvent::NewListenAddr { address, .. } => {
                 if let Some(peer_id) = self.local_peer_id.clone() {
                     let full_addr = address.clone().with(Protocol::P2p(peer_id));
@@ -117,6 +129,10 @@ impl BootstrapNode {
                 "Identify info from {peer_id}: protocols={:?}",
                 info.protocols
             );
+
+            let observed = info.observed_addr.clone();
+            log::debug!("Observed address from {peer_id}: {}", observed);
+            swarm.add_external_address(observed);
 
             // Add peer addresses to Kademlia DHT and in-memory map
             for addr in info.listen_addrs {

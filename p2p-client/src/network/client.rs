@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::env;
 use std::error::Error;
-use std::io;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -20,6 +21,7 @@ use crate::common::{ChatMessage, NetworkCommand, NetworkEvent, PeerStatus};
 use serde_json;
 
 use super::behavior::{ChatBehaviorEvent, build_behavior};
+use super::nat_traversal::NatTraversal;
 use super::transport::build_transport;
 
 const CLIENT_KEY_PATH: &str = "data/client_key.pk";
@@ -35,6 +37,11 @@ pub struct P2PClient {
     friend_ids: HashSet<String>,
     pending_friend_queries: HashMap<kad::QueryId, String>,
     friend_queue: VecDeque<String>,
+    bootstrap_completed: bool,
+    auto_dial_query_id: Option<kad::QueryId>,
+    dialed_peers: HashSet<PeerId>,
+    peer_addresses: HashMap<PeerId, Vec<Multiaddr>>,
+    nat_traversal: NatTraversal,
 }
 
 impl P2PClient {
@@ -46,6 +53,7 @@ impl P2PClient {
     ) -> Self {
         let friend_ids = load_friend_list_from_disk();
         let friend_queue = friend_ids.iter().cloned().collect::<VecDeque<_>>();
+        let bootstrap_peers_clone = bootstrap_peers.clone();
         Self {
             event_sender,
             command_receiver,
@@ -55,6 +63,11 @@ impl P2PClient {
             friend_ids,
             pending_friend_queries: HashMap::new(),
             friend_queue,
+            bootstrap_completed: false,
+            auto_dial_query_id: None,
+            dialed_peers: HashSet::new(),
+            peer_addresses: HashMap::new(),
+            nat_traversal: NatTraversal::new(bootstrap_peers_clone),
         }
     }
 
@@ -96,13 +109,16 @@ impl P2PClient {
     }
 
     pub async fn run(mut self) -> Result<(), Box<dyn Error>> {
+        
         let local_key = load_or_generate_local_key()?;
         let local_peer_id = PeerId::from(local_key.public());
         self.local_peer_id = Some(local_peer_id.clone());
         log::info!("Local PeerID: {local_peer_id:?}");
 
-        let transport = build_transport(&local_key)?;
-        let (behavior, topic) = build_behavior(&local_key, local_peer_id)?;
+        // Build transport and get relay behaviour (they must be created together)
+        let (transport, relay_behaviour) = build_transport(&local_key, local_peer_id)?;
+        // Pass relay behaviour to build_behavior to ensure they're linked
+        let (behavior, topic) = build_behavior(&local_key, local_peer_id, relay_behaviour)?;
 
         let mut swarm = Swarm::new(
             transport,
@@ -110,6 +126,11 @@ impl P2PClient {
             local_peer_id,
             SwarmConfig::with_tokio_executor(),
         );
+
+        if let Some(public_addr) = client_public_addr_from_env() {
+            log::info!("Announcing client public address: {}", public_addr);
+            swarm.add_external_address(public_addr);
+        }
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
@@ -123,8 +144,16 @@ impl P2PClient {
                     .behaviour_mut()
                     .kad
                     .add_address(&peer_id, addr.clone());
+                // Don't insert into dialed_peers here - only when connection is actually established
+                // This allows relay fallback to retry if direct connection fails
                 if let Err(err) = swarm.dial(addr.clone()) {
                     log::warn!("Failed to dial bootstrap peer {peer_id}: {err}");
+                } else {
+                    // Request relay reservation from bootstrap peer (they might be relay servers)
+                    // This allows us to listen on relay circuit addresses to receive incoming connections
+                    log::debug!("Requesting relay reservation from bootstrap peer {}", peer_id);
+                    // The reservation request will be handled automatically by relay behaviour
+                    // when the connection is established
                 }
             }
 
@@ -265,12 +294,33 @@ impl P2PClient {
                 self.handle_identify_event(event, swarm).await;
             }
             SwarmEvent::Behaviour(ChatBehaviorEvent::Kad(event)) => {
-                self.handle_kad_event(event).await;
+                self.handle_kad_event(event, swarm).await;
+            }
+            SwarmEvent::Behaviour(ChatBehaviorEvent::Relay(event)) => {
+                self.nat_traversal.handle_relay_event(event, swarm).await;
+            }
+            SwarmEvent::Behaviour(ChatBehaviorEvent::Autonat(event)) => {
+                self.nat_traversal.handle_autonat_event(event, swarm).await;
+            }
+            SwarmEvent::Behaviour(ChatBehaviorEvent::Dcutr(event)) => {
+                self.nat_traversal.handle_dcutr_event(event, swarm).await;
+            }
+            SwarmEvent::Behaviour(ChatBehaviorEvent::Ping(event)) => {
+                log::trace!("Ping event: {:?}", event);
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 log::info!("Listening on {address:?}");
             }
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                self.dialed_peers.insert(peer_id); // Track connected peers
+                // Remove from failed connections if successful
+                self.nat_traversal.clear_failed_direct(&peer_id);
+                
+                // Check if this is a relay connection
+                if endpoint.is_relayed() {
+                    log::info!("Connected to {} via relay", peer_id);
+                }
+                
                 let peer_id_str = peer_id.to_string();
                 let _ = self
                     .event_sender
@@ -280,12 +330,16 @@ impl P2PClient {
                     self.notify_friend_status(
                         &peer_id_str,
                         true,
-                        "Đã kết nối trực tiếp tới bạn",
+                        if endpoint.is_relayed() {
+                            "Đã kết nối qua relay"
+                        } else {
+                            "Đã kết nối trực tiếp tới bạn"
+                        },
                     )
                     .await;
                 }
             }
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            SwarmEvent::ConnectionClosed { peer_id, cause: _, .. } => {
                 let peer_id_str = peer_id.to_string();
                 let _ = self
                     .event_sender
@@ -298,6 +352,30 @@ impl P2PClient {
                         "Kết nối đã đóng",
                     )
                     .await;
+                }
+            }
+            SwarmEvent::Dialing { peer_id, .. } => {
+                if let Some(peer) = peer_id {
+                    log::debug!("Dialing peer {}", peer);
+                }
+            }
+            SwarmEvent::OutgoingConnectionError { peer_id, error, connection_id: _ } => {
+                if let Some(peer) = peer_id {
+                    log::warn!("Outgoing connection error to {}: {:?}", peer, error);
+                    // Track failed direct connection for relay retry
+                    // Check if error is not transient (e.g., not a timeout that might succeed later)
+                    let should_retry = match &error {
+                        libp2p::swarm::DialError::Transport(_) => true,
+                        libp2p::swarm::DialError::NoAddresses => true,
+                        libp2p::swarm::DialError::Denied { .. } => false,
+                        libp2p::swarm::DialError::Aborted => false,
+                        _ => true, // Default to retry for other errors
+                    };
+                    if should_retry {
+                        self.nat_traversal.mark_failed_direct(peer);
+                        // Try relay connection if available
+                        self.nat_traversal.retry_with_relay(peer, swarm, &self.dialed_peers).await;
+                    }
                 }
             }
             _ => {}
@@ -315,6 +393,9 @@ impl P2PClient {
                 info.protocols
             );
 
+            let observed = info.observed_addr.clone();
+            log::debug!("Observed address from {peer_id}: {}", observed);
+            swarm.add_external_address(observed);
 
             for addr in info.listen_addrs {
                 swarm
@@ -325,7 +406,11 @@ impl P2PClient {
         }
     }
 
-    async fn handle_kad_event(&mut self, event: kad::Event) {
+    async fn handle_kad_event(
+        &mut self,
+        event: kad::Event,
+        swarm: &mut Swarm<super::behavior::ChatBehavior>,
+    ) {
         match event {
             kad::Event::OutboundQueryProgressed { id, result, .. } => {
                 match result {
@@ -335,6 +420,11 @@ impl P2PClient {
                                 log::info!(
                                     "Kademlia bootstrap ok, remaining peers: {num_remaining}"
                                 );
+                                // When bootstrap completes, query DHT for peers to dial
+                                if num_remaining == 0 && !self.bootstrap_completed {
+                                    self.bootstrap_completed = true;
+                                    self.start_auto_dial_from_dht(swarm).await;
+                                }
                             }
                             Err(err) => {
                                 log::warn!("Kademlia bootstrap error: {err:?}");
@@ -342,6 +432,15 @@ impl P2PClient {
                         }
                     }
                     kad::QueryResult::GetClosestPeers(res) => {
+                        // Check if this is the auto-dial query
+                        if let Some(query_id) = self.auto_dial_query_id {
+                            if id == query_id {
+                                self.auto_dial_query_id = None;
+                                self.handle_auto_dial_result(res, swarm).await;
+                                return;
+                            }
+                        }
+                        // Otherwise handle friend queries
                         if let Some(peer_id) = self.pending_friend_queries.remove(&id) {
                             self.handle_friend_lookup_result(peer_id, res).await;
                         }
@@ -355,10 +454,24 @@ impl P2PClient {
                 log::debug!(
                     "Kademlia routing table updated for {peer} (addresses: {addresses:?})"
                 );
+                // Store addresses for auto-dial
+                let addr_vec: Vec<Multiaddr> = addresses.iter().cloned().collect();
+                if !addr_vec.is_empty() {
+                    self.peer_addresses.insert(peer, addr_vec.clone());
+                    
+                    // Auto-dial if bootstrap completed and peer not yet dialed
+                    if self.bootstrap_completed 
+                        && !self.dialed_peers.contains(&peer)
+                        && !self.bootstrap_peers.iter().any(|(pid, _)| *pid == peer)
+                    {
+                        self.try_dial_peer(peer, addr_vec, swarm);
+                    }
+                }
             }
             _ => {}
         }
     }
+
 
     async fn notify_friend_status(
         &self,
@@ -485,6 +598,145 @@ impl P2PClient {
         }
     }
 
+    fn try_dial_peer(
+        &mut self,
+        peer_id: PeerId,
+        addresses: Vec<Multiaddr>,
+        swarm: &mut Swarm<super::behavior::ChatBehavior>,
+    ) -> bool {
+        for addr in addresses {
+            // Construct full multiaddr with peer_id if not already present
+            let mut full_addr = addr.clone();
+            if !full_addr.iter().any(|p| matches!(p, Protocol::P2p(_))) {
+                full_addr = full_addr.with(Protocol::P2p(peer_id));
+            }
+
+            match swarm.dial(full_addr.clone()) {
+                Ok(()) => {
+                    // Don't insert into dialed_peers here - only when connection is actually established
+                    // This allows relay fallback to retry if direct connection fails
+                    log::info!("Auto-dialing peer {} at {}", peer_id, full_addr);
+                    return true;
+                }
+                Err(err) => {
+                    log::debug!("Failed to dial {} at {}: {}", peer_id, full_addr, err);
+                    // Try next address
+                }
+            }
+        }
+        false
+    }
+
+    async fn start_auto_dial_from_dht(
+        &mut self,
+        swarm: &mut Swarm<super::behavior::ChatBehavior>,
+    ) {
+        // Query DHT for closest peers using local peer id as target
+        // This will return peers that are close to us in the DHT
+        if let Some(local_peer_id) = self.local_peer_id {
+            log::info!("Bootstrap completed, querying DHT for peers to dial...");
+            let query_id = swarm.behaviour_mut().kad.get_closest_peers(local_peer_id);
+            self.auto_dial_query_id = Some(query_id);
+        }
+    }
+
+    async fn handle_auto_dial_result(
+        &mut self,
+        result: Result<kad::GetClosestPeersOk, kad::GetClosestPeersError>,
+        swarm: &mut Swarm<super::behavior::ChatBehavior>,
+    ) {
+        match result {
+            Ok(kad::GetClosestPeersOk { peers, .. }) => {
+                log::info!("Found {} peers from DHT, attempting to dial...", peers.len());
+                
+                // Track bootstrap peer IDs to avoid dialing them again
+                let bootstrap_peer_ids: HashSet<PeerId> = self
+                    .bootstrap_peers
+                    .iter()
+                    .map(|(peer_id, _)| *peer_id)
+                    .collect();
+
+                let mut dialed_count = 0;
+                let mut skipped_count = 0;
+
+                for peer_record in peers {
+                    let peer_id = peer_record.peer_id;
+                    
+                    // Skip if already dialed or is a bootstrap peer
+                    if self.dialed_peers.contains(&peer_id) || bootstrap_peer_ids.contains(&peer_id) {
+                        skipped_count += 1;
+                        continue;
+                    }
+
+                    // Get addresses for this peer from stored addresses
+                    // Note: addresses should be available from RoutingUpdated events
+                    let addresses = self.peer_addresses.get(&peer_id).cloned().unwrap_or_default();
+
+                    if addresses.is_empty() {
+                        // If no addresses stored yet, the peer might not be in routing table
+                        // We'll skip for now and let future RoutingUpdated events populate addresses
+                        // Then we can retry dialing in a future auto-dial cycle
+                        log::debug!("No addresses stored for peer {} yet, skipping (will retry when addresses discovered)", peer_id);
+                        skipped_count += 1;
+                        continue;
+                    }
+
+                    // Try to dial using available addresses
+                    let num_addresses = addresses.len();
+                    if self.try_dial_peer(peer_id, addresses, swarm) {
+                        dialed_count += 1;
+                    } else {
+                        log::debug!("Could not dial peer {} with any of {} addresses", peer_id, num_addresses);
+                    }
+                }
+
+                log::info!(
+                    "Auto-dial completed: {} dialed, {} skipped (already dialed or bootstrap)",
+                    dialed_count,
+                    skipped_count
+                );
+            }
+            Err(kad::GetClosestPeersError::Timeout { peers, .. }) => {
+                log::warn!(
+                    "Timeout querying DHT for peers, but found {} peers",
+                    peers.len()
+                );
+                // Still try to dial the peers we found before timeout
+                if !peers.is_empty() {
+                    let bootstrap_peer_ids: HashSet<PeerId> = self
+                        .bootstrap_peers
+                        .iter()
+                        .map(|(peer_id, _)| *peer_id)
+                        .collect();
+
+                    for peer_record in peers {
+                        let peer_id = peer_record.peer_id;
+                        if self.dialed_peers.contains(&peer_id) || bootstrap_peer_ids.contains(&peer_id) {
+                            continue;
+                        }
+
+                        // Try to get addresses and dial
+                        let addresses = self.peer_addresses.get(&peer_id).cloned().unwrap_or_default();
+
+                        for addr in addresses {
+                            let mut full_addr = addr.clone();
+                            if !full_addr.iter().any(|p| matches!(p, Protocol::P2p(_))) {
+                                full_addr = full_addr.with(Protocol::P2p(peer_id));
+                            }
+
+                            if swarm.dial(full_addr.clone()).is_ok() {
+                                // Don't insert into dialed_peers here - only when connection is actually established
+                                // This allows relay fallback to retry if direct connection fails
+                                log::info!("Dialing peer {} at {}", peer_id, full_addr);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn persist_friend_list(&self) {
         if let Err(err) = write_friend_list(&self.friend_ids) {
             log::warn!("Failed to persist friend list: {err}");
@@ -544,4 +796,17 @@ fn write_friend_list(friends: &HashSet<String>) -> io::Result<()> {
 
     let payload = serde_json::to_string_pretty(&entries)?;
     fs::write(FRIENDS_FILE, payload)
+}
+
+fn client_public_addr_from_env() -> Option<Multiaddr> {
+    match env::var("CLIENT_PUBLIC_ADDR") {
+        Ok(addr) => match addr.parse::<Multiaddr>() {
+            Ok(multi) => Some(multi),
+            Err(err) => {
+                log::warn!("Invalid CLIENT_PUBLIC_ADDR `{addr}`: {err}");
+                None
+            }
+        },
+        Err(_) => None,
+    }
 }

@@ -5,3 +5,4 @@
 bootstrap.example.json
 config/bootstrap.json
 client_key.pk
+p2p-client/.env
