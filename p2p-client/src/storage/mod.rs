@@ -1,9 +1,6 @@
 pub mod client_db;
 pub mod database;
 pub mod models;
-pub mod server_db;
-
-pub use server_db::ServerDatabase;
 
 use std::fs;
 

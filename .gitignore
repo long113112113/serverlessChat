@@ -4,4 +4,4 @@
 **/target/
 bootstrap.example.json
 config/bootstrap.json
-/data/
+client_key.pk

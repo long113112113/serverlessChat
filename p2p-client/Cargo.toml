@@ -1,5 +1,5 @@
 [package]
-name = "rust_p2p_chat"
+name = "p2p-client"
 version.workspace = true
 edition.workspace = true
 

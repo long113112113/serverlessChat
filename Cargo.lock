@@ -3950,6 +3950,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "p2p-client"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "dotenvy",
+ "eframe",
+ "egui",
+ "env_logger",
+ "futures",
+ "hex",
+ "libp2p",
+ "log",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "p2p-nodemaster"
 version = "0.1.0"
 dependencies = [
@@ -4570,29 +4593,6 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
-]
-
-[[package]]
-name = "rust_p2p_chat"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "dotenvy",
- "eframe",
- "egui",
- "env_logger",
- "futures",
- "hex",
- "libp2p",
- "log",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
 ]
 
 [[package]]

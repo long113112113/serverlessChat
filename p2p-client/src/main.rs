@@ -20,8 +20,8 @@ async fn main() -> Result<(), eframe::Error> {
     // Ensure data directory exists
     storage::ensure_data_dir().ok();
 
-    // Load bootstrap nodes from SQLite
-    let bootstrap_nodes = config::load_bootstrap_nodes_from_db();
+    // Load bootstrap nodes from JSON file
+    let bootstrap_nodes = config::load_bootstrap_nodes();
     let bootstrap_peers = parse_bootstrap_peers(&bootstrap_nodes);
 
     run_full_client(bootstrap_peers).await
