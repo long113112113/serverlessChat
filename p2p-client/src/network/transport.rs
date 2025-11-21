@@ -12,7 +12,7 @@ pub fn build_transport(
 ) -> Result<(Boxed<(PeerId, StreamMuxerBox)>, client::Behaviour), Box<dyn Error>> {
     let (relay_transport, relay_behaviour) = client::new(local_peer_id);
     let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true));
-    let transport = OrTransport::new(relay_transport, tcp_transport)
+    let transport = OrTransport::new(tcp_transport, relay_transport)
         .upgrade(Version::V1)
         .authenticate(noise::Config::new(local_key)?)
         .multiplex(yamux::Config::default())
