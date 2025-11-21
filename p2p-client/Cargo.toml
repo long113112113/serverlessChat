@@ -1,0 +1,37 @@
+[package]
+name = "rust_p2p_chat"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# --- Giao diện (GUI) ---
+eframe = "0.33.2"  # Wrapper bao quanh egui để chạy trên Desktop
+egui = "0.33.2"
+uuid = { version = "1.18.1", features = ["v4", "fast-rng", "macro-diagnostics"] }
+
+# --- Xử lý bất đồng bộ ---
+tokio.workspace = true
+futures = "0.3.31"
+
+# --- Mạng P2P (libp2p) ---
+# Chúng ta dùng các feature cơ bản:
+# - gossipsub: Giao thức lan truyền tin nhắn (Chat room)
+# - kad: Kademlia DHT để tìm peer qua Internet
+# - identify: Trao đổi thông tin kết nối (addr, agent)
+# - noise: Mã hóa kết nối
+# - yamux: Đa luồng trên 1 kết nối
+# - tcp-tokio: Chạy trên nền tokio
+libp2p.workspace = true
+
+# --- Tiện ích ---
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+hex.workspace = true
+log.workspace = true
+env_logger.workspace = true
+dotenvy.workspace = true
+clap = { version = "4.5.4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+regex = "1.10"
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }

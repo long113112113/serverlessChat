@@ -1,4 +1,4 @@
-use super::types::ChatMessage;
+use super::types::{ChatMessage, PeerStatus};
 
 /// Sự kiện từ tầng mạng gửi lên UI.
 #[derive(Debug, Clone)]
@@ -7,4 +7,5 @@ pub enum NetworkEvent {
     HistorySynced(Vec<ChatMessage>),
     PeerConnected(String),
     PeerDisconnected(String),
+    FriendStatus(PeerStatus),
 }

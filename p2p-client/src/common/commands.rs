@@ -9,4 +9,13 @@ pub enum NetworkCommand {
         to_peer: String,
         last_timestamp: i64,
     },
+    /// Connect to a peer manually by address
+    /// - address: Multiaddr của peer (ví dụ: /ip4/192.168.1.1/tcp/9000/p2p/12D3KooW...)
+    ConnectToPeer {
+        address: String,
+    },
+    /// Add a peer by PeerId into the friend list and check their status.
+    AddFriend {
+        peer_id: String,
+    },
 }

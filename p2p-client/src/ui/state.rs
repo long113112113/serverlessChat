@@ -1,5 +1,6 @@
-use crate::common::ChatMessage;
+use crate::common::{ChatMessage, PeerStatus};
 use chrono::{DateTime, Utc};
+use std::collections::{BTreeMap, HashMap};
 
 /// Debug event để hiển thị thông tin mạng
 #[derive(Debug, Clone)]
@@ -14,10 +15,15 @@ pub struct DebugEvent {
 pub struct AppState {
     pub messages: Vec<ChatMessage>,
     pub input_text: String,
+    pub peer_address_input: String,
     pub peers: Vec<String>,
     pub debug_events: Vec<DebugEvent>,
     /// Map peer_id -> last_seen timestamp để tính thời gian offline
-    pub peer_last_seen: std::collections::HashMap<String, DateTime<Utc>>,
+    pub peer_last_seen: HashMap<String, DateTime<Utc>>,
+    /// Input lưu peer_id bạn bè do người dùng nhập
+    pub friend_input: String,
+    /// Danh sách bạn bè (theo peer_id) và trạng thái mới nhất
+    pub friends: BTreeMap<String, PeerStatus>,
 }
 
 impl AppState {
@@ -25,9 +31,12 @@ impl AppState {
         Self {
             messages: Vec::new(),
             input_text: String::new(),
+            peer_address_input: String::new(),
             peers: Vec::new(),
             debug_events: Vec::new(),
-            peer_last_seen: std::collections::HashMap::new(),
+            peer_last_seen: HashMap::new(),
+            friend_input: String::new(),
+            friends: BTreeMap::new(),
         }
     }
 
@@ -140,5 +149,26 @@ impl AppState {
             // Peer đang online, return None hoặc 0
             None
         }
+    }
+
+    pub fn upsert_friend_status(&mut self, status: PeerStatus) {
+        if status.online {
+            self.add_debug_event(
+                "FRIEND_ONLINE".to_string(),
+                Some(status.peer_id.clone()),
+                format!("Friend online: {}", status.message),
+            );
+        } else {
+            self.add_debug_event(
+                "FRIEND_OFFLINE".to_string(),
+                Some(status.peer_id.clone()),
+                format!("Friend offline: {}", status.message),
+            );
+        }
+        self.friends.insert(status.peer_id.clone(), status);
+    }
+
+    pub fn friend_statuses(&self) -> impl Iterator<Item = &PeerStatus> {
+        self.friends.values()
     }
 }

@@ -4,7 +4,6 @@ mod network;
 mod storage;
 mod ui;
 
-use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
@@ -12,30 +11,11 @@ use network::P2PClient;
 use tokio::sync::mpsc;
 use ui::ChatApp;
 
-#[derive(Parser)]
-#[command(
-    name = "rust_p2p_chat",
-    version,
-    about = "Modular P2P chat application"
-)]
-struct Cli {
-    #[command(subcommand)]
-    mode: Option<Mode>,
-}
-
-#[derive(Subcommand, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// Run in bootstrap/server mode (no UI, announce only)
-    Server,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
     dotenv().ok();
     // Khởi tạo Logger để debug
     env_logger::init();
-
-    let cli = Cli::parse();
 
     // Ensure data directory exists
     storage::ensure_data_dir().ok();
@@ -44,22 +24,7 @@ async fn main() -> Result<(), eframe::Error> {
     let bootstrap_nodes = config::load_bootstrap_nodes_from_db();
     let bootstrap_peers = parse_bootstrap_peers(&bootstrap_nodes);
 
-    if cli.mode == Some(Mode::Server) {
-        run_server_node(bootstrap_peers).await;
-        return Ok(());
-    }
-
     run_full_client(bootstrap_peers).await
-}
-
-async fn run_server_node(bootstrap_peers: Vec<(PeerId, Multiaddr)>) {
-    let (_cmd_tx, cmd_rx) = mpsc::channel(1);
-    let (event_tx, _event_rx) = mpsc::channel(1);
-
-    let client = P2PClient::new(event_tx, cmd_rx, bootstrap_peers, false);
-    if let Err(err) = client.run().await {
-        log::error!("Bootstrap node terminated unexpectedly: {err}");
-    }
 }
 
 async fn run_full_client(bootstrap_peers: Vec<(PeerId, Multiaddr)>) -> Result<(), eframe::Error> {

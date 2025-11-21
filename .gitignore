@@ -1,5 +1,7 @@
 .cursorignore
-.cursor/rules/rule.mdc
-/target
+# Rust build artifacts
+/target/
+**/target/
 bootstrap.example.json
 config/bootstrap.json
+/data/

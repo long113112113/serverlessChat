@@ -3,7 +3,10 @@ use tokio::sync::mpsc;
 
 use crate::common::{NetworkCommand, NetworkEvent};
 
-use super::components::{chat_area, debug_panel, input_bar, sidebar};
+use super::components::{
+    chat_area, debug_panel, input_bar,
+    sidebar::{self, SidebarActions},
+};
 use super::state::AppState;
 
 pub struct ChatApp {
@@ -32,6 +35,7 @@ impl ChatApp {
                 NetworkEvent::HistorySynced(history) => self.state.push_history(history),
                 NetworkEvent::PeerConnected(peer_id) => self.state.add_peer(peer_id),
                 NetworkEvent::PeerDisconnected(peer_id) => self.state.remove_peer(&peer_id),
+                NetworkEvent::FriendStatus(status) => self.state.upsert_friend_status(status),
             }
         }
     }
@@ -44,6 +48,24 @@ impl ChatApp {
             log::warn!("Failed to send command to network: {err}");
         }
     }
+
+    fn connect_to_peer(&mut self, address: String) {
+        if let Err(err) = self
+            .command_sender
+            .try_send(NetworkCommand::ConnectToPeer { address })
+        {
+            log::warn!("Failed to send connect command to network: {err}");
+        }
+    }
+
+    fn add_friend(&mut self, peer_id: String) {
+        if let Err(err) = self
+            .command_sender
+            .try_send(NetworkCommand::AddFriend { peer_id })
+        {
+            log::warn!("Failed to send add-friend command: {err}");
+        }
+    }
 }
 
 impl eframe::App for ChatApp {
@@ -54,7 +76,13 @@ impl eframe::App for ChatApp {
             .resizable(true)
             .default_width(200.0)
             .show(ctx, |ui| {
-                sidebar::render(ui, &self.state);
+                let actions: SidebarActions = sidebar::render(ui, &mut self.state);
+                if let Some(address) = actions.connect_address {
+                    self.connect_to_peer(address);
+                }
+                if let Some(peer_id) = actions.friend_peer_id {
+                    self.add_friend(peer_id);
+                }
             });
 
         egui::SidePanel::right("debug_panel")
